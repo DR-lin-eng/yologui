@@ -7,6 +7,7 @@ import time
 import threading
 import signal
 import re
+import shutil
 from datetime import datetime, timedelta
 import subprocess
 from PySide6.QtCore import QObject, Signal, QThread, QMutex, QWaitCondition
@@ -104,14 +105,22 @@ class TrainingManager(QObject):
         self.total_epochs = int(params.get('epochs', 100))
         self.current_metrics = {}
         
-        # 构建命令 - 修复: 使用正确的ultralytics调用方式
-        cmd = [sys.executable, "-m", "ultralytics.yolo"]
+        # 构建命令 - 使用yolo命令行格式
+        # 首先查找是否有yolo命令可用
+        yolo_cmd = "yolo"
+        
+        # 如果没有yolo命令可用，则回退到python模块调用
+        if shutil.which(yolo_cmd) is None:
+            cmd = [sys.executable, "-m", "ultralytics"]
+        else:
+            cmd = [yolo_cmd]
         
         # 确定任务类型
         task = params.get('task', 'detect')
         if params.get('is_classification', False):
             task = 'classify'
         
+        # 添加任务类型和train命令
         cmd.append(task)
         cmd.append('train')
         
@@ -122,6 +131,18 @@ class TrainingManager(QObject):
         else:
             # 其他任务使用data.yaml
             cmd.append(f"data={params['data_path']}")
+        
+        # 添加模型参数
+        if 'model' in params:
+            model_param = params['model']
+            if task == 'classify' and 'cls' not in model_param:
+                # 确保分类任务使用分类模型
+                model_name = model_param.split('.')[0]
+                if not model_name.endswith('-cls'):
+                    model_name += '-cls'
+                cmd.append(f"model={model_name}.pt")
+            else:
+                cmd.append(f"model={model_param}")
         
         # 添加其他参数 - 只添加非默认参数
         default_params = {
@@ -134,17 +155,10 @@ class TrainingManager(QObject):
         }
         
         for key, value in params.items():
-            if key not in ['data_path', 'train_folder', 'is_classification', 'direct_folder_mode']:
+            if key not in ['data_path', 'train_folder', 'is_classification', 'direct_folder_mode', 'model', 'task']:
                 # 只添加非默认值或明确需要的值
-                if key == 'model' or key not in default_params or value != default_params.get(key):
-                    if key == 'model' and task == 'classify' and 'cls' not in value:
-                        # 确保分类任务使用分类模型
-                        model_name = value.split('.')[0]
-                        if not model_name.endswith('-cls'):
-                            model_name += '-cls'
-                        cmd.append(f"model={model_name}.pt")
-                    elif key != 'task':  # 不要重复添加task
-                        cmd.append(f"{key}={value}")
+                if key not in default_params or value != default_params.get(key):
+                    cmd.append(f"{key}={value}")
         
         print(f"执行命令: {' '.join(cmd)}")
         

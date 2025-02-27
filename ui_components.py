@@ -16,7 +16,7 @@ from PySide6.QtCore import Qt, QSize, Slot, Signal, QPoint
 from PySide6.QtGui import QFont, QIcon, QPixmap, QColor, QPalette
 
 from parameters import parameter_descriptions, parse_data_yaml, save_data_yaml
-
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve
 
 class CollapsibleBox(QWidget):
     """可折叠的分组框"""
@@ -87,12 +87,16 @@ class CollapsibleBox(QWidget):
         
     def toggle_contents(self, checked):
         """切换内容区域的展开/折叠状态"""
-        # 开始高度和结束高度
-        start_height = 0 if checked else self.content_height
-        end_height = self.content_height if checked else 0
-        
-        # 设置箭头方向
+        # 更新按钮状态
         self.toggleButton.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+        
+        # 如果已经有动画在运行，先停止
+        if self.animation.state() == QPropertyAnimation.Running:
+            self.animation.stop()
+        
+        # 开始高度和结束高度
+        start_height = self.contentArea.height()
+        end_height = self.content_height if checked else 0
         
         # 设置动画参数
         self.animation.setStartValue(start_height)
@@ -106,9 +110,36 @@ class CollapsibleBox(QWidget):
         # 如果折叠，确保最大高度为0
         if not self.toggleButton.isChecked():
             self.contentArea.setMaximumHeight(0)
+        else:
+            # 如果展开，确保内容区域可以随内容变化
+            self.contentArea.setMaximumHeight(self.content_height)
     
+    def add_widget(self, widget):
+        """添加控件到内容区域"""
+        self.content_layout.addWidget(widget)
+        
+        # 重新计算内容高度
+        self.content_widget.adjustSize()
+        self.content_height = self.content_widget.height()
+        
+        # 如果已经展开，更新最大高度
+        if self.toggleButton.isChecked():
+            self.contentArea.setMaximumHeight(self.content_height)
+    
+    def add_layout(self, layout):
+        """添加布局到内容区域"""
+        self.content_layout.addLayout(layout)
+        
+        # 重新计算内容高度
+        self.content_widget.adjustSize()
+        self.content_height = self.content_widget.height()
+        
+        # 如果已经展开，更新最大高度
+        if self.toggleButton.isChecked():
+            self.contentArea.setMaximumHeight(self.content_height)
+            
     def setContentLayout(self, layout):
-        """设置内容区域的布局"""
+        """设置内容区域的布局 (兼容旧代码)"""
         # 清除旧布局
         while self.content_layout.count():
             item = self.content_layout.takeAt(0)
@@ -122,14 +153,6 @@ class CollapsibleBox(QWidget):
         self.content_widget.adjustSize()
         self.content_height = self.content_widget.height()
         
-    def add_widget(self, widget):
-        """添加控件到内容区域"""
-        self.content_layout.addWidget(widget)
-        
-        # 重新计算内容高度
-        self.content_widget.adjustSize()
-        self.content_height = self.content_widget.height() 
-        
     def expand(self):
         """展开内容区域"""
         if not self.toggleButton.isChecked():
@@ -139,6 +162,10 @@ class CollapsibleBox(QWidget):
         """折叠内容区域"""
         if self.toggleButton.isChecked():
             self.toggleButton.click()
+    
+    def setTitle(self, title):
+        """设置标题"""
+        self.toggleButton.setText(title)
 
 
 class ParameterWidget(QWidget):
@@ -458,8 +485,20 @@ class TrainingTab(QWidget):
         advanced_widget = QWidget()
         advanced_layout = QVBoxLayout(advanced_widget)
         
+        # 创建带滚动条的参数区域
+        params_scroll_area = QScrollArea()
+        params_scroll_area.setWidgetResizable(True)
+        params_scroll_area.setFrameShape(QFrame.NoFrame)  # 去掉边框
+        params_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 禁用水平滚动条
+        params_scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        # 创建内部容器widget
+        params_container = QWidget()
+        params_layout = QVBoxLayout(params_container)
+        params_layout.setSpacing(10)
+        
         # 数据选择区域
-        data_group = QGroupBox("数据集选择")
+        data_group = QGroupBox("数据集设置")
         data_layout = QVBoxLayout(data_group)
         data_layout.setSpacing(10)
         
@@ -508,73 +547,59 @@ class TrainingTab(QWidget):
         
         folder_layout.addLayout(train_folder_layout)
         
-        # 分类任务设置
-        self.class_task_frame = QFrame()
-        self.class_task_frame.setFrameShape(QFrame.StyledPanel)
-        self.class_task_frame.setStyleSheet("QFrame {background-color: #f8f9fa; border-radius: 5px; padding: 5px;}")
-        class_task_layout = QVBoxLayout(self.class_task_frame)
+        # 分类任务设置 - 改为可折叠的方式
+        self.class_task_box = CollapsibleBox("分类数据结构")
+        class_task_internal = QWidget()
+        class_task_layout = QVBoxLayout(class_task_internal)
         
-        # 分类数据集结构选择
-        self.dataset_struct_label = QLabel("数据集结构:")
-        self.dataset_struct_label.setStyleSheet("font-weight: bold; margin-bottom: 5px;")
-        
-        # 单选按钮组
+        # 数据集结构选择
+        dataset_struct_layout = QHBoxLayout()
+        self.dataset_struct_label = QLabel("结构类型:")
         self.dataset_struct_group = QButtonGroup(self)
         
         # 直接使用文件夹(不生成YAML)
-        self.direct_folder_radio = QRadioButton("直接使用文件夹训练 (无需data.yaml)")
+        self.direct_folder_radio = QRadioButton("直接使用文件夹")
         self.direct_folder_radio.setChecked(True)
         self.direct_folder_radio.setToolTip("对于分类任务，可以直接使用文件夹路径进行训练，无需生成data.yaml")
         self.dataset_struct_group.addButton(self.direct_folder_radio, 1)
         
         # 预分割数据集结构
-        self.presplit_folder_radio = QRadioButton("已分割的数据集 (含train/val/test文件夹)")
+        self.presplit_folder_radio = QRadioButton("预分割数据集")
         self.presplit_folder_radio.setToolTip("数据集已包含train、val和test文件夹，每个文件夹下有类别子文件夹")
         self.dataset_struct_group.addButton(self.presplit_folder_radio, 2)
         
         # 单层类别文件夹结构
-        self.single_folder_radio = QRadioButton("单层类别文件夹 (自动分割train/val)")
+        self.single_folder_radio = QRadioButton("单层文件夹")
         self.single_folder_radio.setToolTip("数据集包含各个类别的文件夹，系统将自动分割为训练集和验证集")
         self.dataset_struct_group.addButton(self.single_folder_radio, 3)
         
-        class_task_layout.addWidget(self.dataset_struct_label)
-        class_task_layout.addWidget(self.direct_folder_radio)
-        class_task_layout.addWidget(self.presplit_folder_radio)
-        class_task_layout.addWidget(self.single_folder_radio)
+        dataset_struct_layout.addWidget(self.dataset_struct_label)
+        dataset_struct_layout.addWidget(self.direct_folder_radio)
+        dataset_struct_layout.addWidget(self.presplit_folder_radio)
+        dataset_struct_layout.addWidget(self.single_folder_radio)
+        dataset_struct_layout.addStretch()
+        
+        class_task_layout.addLayout(dataset_struct_layout)
         
         # 连接信号
         self.dataset_struct_group.buttonClicked.connect(self.on_dataset_struct_changed)
         
-        # 文件夹结构说明
-        self.struct_info_frame = QFrame()
-        self.struct_info_frame.setFrameShape(QFrame.StyledPanel)
-        self.struct_info_frame.setStyleSheet("background-color: #e9ecef; padding: 8px; border-radius: 5px;")
-        struct_info_layout = QVBoxLayout(self.struct_info_frame)
+        # 文件夹结构说明 - 改为更紧凑的显示方式
+        self.struct_info_button = QPushButton("查看文件夹结构说明")
+        self.struct_info_button.clicked.connect(self.show_folder_structure_info)
+        class_task_layout.addWidget(self.struct_info_button)
         
-        self.struct_info_label = QLabel("文件夹结构示例:\n"
-                                    "└── dataset/\n"
-                                    "    ├── class1/\n"
-                                    "    │   ├── img1.jpg\n"
-                                    "    │   └── ...\n"
-                                    "    └── class2/\n"
-                                    "        ├── img2.jpg\n"
-                                    "        └── ...")
-        self.struct_info_label.setStyleSheet("font-family: monospace; color: #495057;")
-        struct_info_layout.addWidget(self.struct_info_label)
-        
-        class_task_layout.addWidget(self.struct_info_frame)
-        
-        folder_layout.addWidget(self.class_task_frame)
-        self.class_task_frame.setVisible(False)
+        # 添加类设置到可折叠框
+        self.class_task_box.add_widget(class_task_internal)
+        self.class_task_box.setVisible(False)  # 默认隐藏
+        folder_layout.addWidget(self.class_task_box)
         
         # 非分类任务的设置
         self.nonclass_task_frame = QFrame()
-        self.nonclass_task_frame.setFrameShape(QFrame.StyledPanel)
-        self.nonclass_task_frame.setStyleSheet("QFrame {background-color: #f8f9fa; border-radius: 5px; padding: 5px;}")
-        nonclass_task_layout = QVBoxLayout(self.nonclass_task_frame)
+        nonclass_task_layout = QHBoxLayout(self.nonclass_task_frame)
+        nonclass_task_layout.setContentsMargins(0, 0, 0, 0)
         
         # 验证集比例
-        val_split_layout = QHBoxLayout()
         self.val_split_label = QLabel("验证集比例:")
         self.val_split_spin = QDoubleSpinBox()
         self.val_split_spin.setRange(0.0, 0.5)
@@ -582,16 +607,14 @@ class TrainingTab(QWidget):
         self.val_split_spin.setValue(0.2)
         self.val_split_spin.setDecimals(2)
         
-        val_split_layout.addWidget(self.val_split_label)
-        val_split_layout.addWidget(self.val_split_spin)
-        val_split_layout.addStretch()
-        
         # 生成YAML按钮
         self.generate_yaml_button = QPushButton("生成YAML配置")
         self.generate_yaml_button.clicked.connect(self.generate_yaml_config)
         
-        nonclass_task_layout.addLayout(val_split_layout)
+        nonclass_task_layout.addWidget(self.val_split_label)
+        nonclass_task_layout.addWidget(self.val_split_spin)
         nonclass_task_layout.addWidget(self.generate_yaml_button)
+        nonclass_task_layout.addStretch()
         
         folder_layout.addWidget(self.nonclass_task_frame)
         
@@ -600,22 +623,15 @@ class TrainingTab(QWidget):
         # 默认显示YAML配置模式
         self.folder_group.setVisible(False)
         
-        advanced_layout.addWidget(data_group)
-        
-        # 创建参数分组的滚动区域
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        scroll_widget = QWidget()
-        scroll_layout = QVBoxLayout(scroll_widget)
+        params_layout.addWidget(data_group)
         
         # 创建优化器组
         optimizer_group = self.create_optimizer_param_group()
-        scroll_layout.addWidget(optimizer_group)
+        params_layout.addWidget(optimizer_group)
         
         # 创建增强组
         augment_group = self.create_augment_param_group()
-        scroll_layout.addWidget(augment_group)
+        params_layout.addWidget(augment_group)
         
         # 添加其他参数组
         for group_name, group_params in parameters.items():
@@ -623,10 +639,11 @@ class TrainingTab(QWidget):
                 param_group = ParameterGroup(group_name.capitalize(), group_params)
                 param_group.parameterSelected.connect(self.on_parameter_selected)
                 self.param_groups[group_name] = param_group
-                scroll_layout.addWidget(param_group)
+                params_layout.addWidget(param_group)
         
-        scroll_area.setWidget(scroll_widget)
-        advanced_layout.addWidget(scroll_area, 1)  # 添加拉伸因子
+        # 设置滚动区域的widget
+        params_scroll_area.setWidget(params_container)
+        advanced_layout.addWidget(params_scroll_area)
         
         # 设置高级参数区域的内容
         advanced_box.add_widget(advanced_widget)
@@ -857,16 +874,13 @@ class TrainingTab(QWidget):
         is_classification = "分类" in task_text or "classify" in task_text.lower()
         
         # 更新UI显示
-        self.class_task_frame.setVisible(is_classification)
+        self.class_task_box.setVisible(is_classification)
         self.nonclass_task_frame.setVisible(not is_classification)
         
         # 如果是分类任务，更新数据模式提示
         if is_classification:
             self.train_folder_label.setText("分类数据文件夹:")
             self.train_folder_input.setPlaceholderText("选择包含各个类别文件夹的目录")
-            
-            # 更新文件夹结构说明，默认显示单层结构
-            self.update_folder_structure_info(1)
         else:
             self.train_folder_label.setText("训练文件夹:")
             self.train_folder_input.setPlaceholderText("选择包含images和labels的目录")
@@ -883,56 +897,85 @@ class TrainingTab(QWidget):
             # 如果是分类任务，显示分类任务相关控件
             task_text = self.task_combo.currentText()
             is_classification = "分类" in task_text or "classify" in task_text.lower()
-            self.class_task_frame.setVisible(is_classification)
+            self.class_task_box.setVisible(is_classification)
             self.nonclass_task_frame.setVisible(not is_classification)
+    
+    def show_folder_structure_info(self):
+        """显示文件夹结构说明对话框"""
+        struct_type = 1
+        if self.presplit_folder_radio.isChecked():
+            struct_type = 2
+        elif self.single_folder_radio.isChecked():
+            struct_type = 3
+        
+        info_text = self.get_folder_structure_info(struct_type)
+        
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QDialogButtonBox
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("文件夹结构说明")
+        dialog.resize(400, 300)
+        
+        layout = QVBoxLayout(dialog)
+        
+        text_edit = QTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setPlainText(info_text)
+        text_edit.setStyleSheet("font-family: monospace;")
+        layout.addWidget(text_edit)
+        
+        button_box = QDialogButtonBox(QDialogButtonBox.Close)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        dialog.exec()
+    
+    def get_folder_structure_info(self, struct_type):
+        """获取文件夹结构说明文本"""
+        if struct_type == 1:  # 直接使用文件夹
+            return "直接使用文件夹结构示例:\n" \
+                   "└── dataset/\n" \
+                   "    ├── class1/\n" \
+                   "    │   ├── img1.jpg\n" \
+                   "    │   └── ...\n" \
+                   "    └── class2/\n" \
+                   "        ├── img2.jpg\n" \
+                   "        └── ...\n\n" \
+                   "系统将直接使用该文件夹，无需生成YAML配置。"
+        elif struct_type == 2:  # 预分割的数据集
+            return "预分割数据集结构示例:\n" \
+                   "└── dataset/\n" \
+                   "    ├── train/\n" \
+                   "    │   ├── class1/\n" \
+                   "    │   └── class2/\n" \
+                   "    ├── val/\n" \
+                   "    │   ├── class1/\n" \
+                   "    │   └── class2/\n" \
+                   "    └── test/ (可选)\n" \
+                   "        ├── class1/\n" \
+                   "        └── class2/\n\n" \
+                   "系统将根据这个结构生成data.yaml配置文件。"
+        elif struct_type == 3:  # 单层类别文件夹
+            return "单层类别文件夹结构示例:\n" \
+                   "└── dataset/\n" \
+                   "    ├── class1/\n" \
+                   "    │   ├── img1.jpg\n" \
+                   "    │   └── ...\n" \
+                   "    └── class2/\n" \
+                   "        ├── img2.jpg\n" \
+                   "        └── ...\n\n" \
+                   "系统将自动分割为训练集和验证集，并生成相应的目录和data.yaml配置文件。"
     
     def on_dataset_struct_changed(self, button):
         """数据集结构选择改变时更新UI"""
-        if button == self.direct_folder_radio:
-            struct_type = 1  # 直接使用文件夹
-        elif button == self.presplit_folder_radio:
-            struct_type = 2  # 预分割的数据集
-        elif button == self.single_folder_radio:
-            struct_type = 3  # 单层类别文件夹
-        else:
-            struct_type = 1  # 默认
-        
-        self.update_folder_structure_info(struct_type)
+        # 结构类型在点击"查看文件夹结构说明"时使用
+        # 不需要更新显示，因为已经改为对话框方式
+        pass
     
     def update_folder_structure_info(self, struct_type):
-        """更新文件夹结构说明"""
-        if struct_type == 1:  # 直接使用文件夹
-            self.struct_info_label.setText("文件夹结构示例:\n"
-                                      "└── dataset/\n"
-                                      "    ├── class1/\n"
-                                      "    │   ├── img1.jpg\n"
-                                      "    │   └── ...\n"
-                                      "    └── class2/\n"
-                                      "        ├── img2.jpg\n"
-                                      "        └── ...")
-        elif struct_type == 2:  # 预分割的数据集
-            self.struct_info_label.setText("文件夹结构示例:\n"
-                                      "└── dataset/\n"
-                                      "    ├── train/\n"
-                                      "    │   ├── class1/\n"
-                                      "    │   └── class2/\n"
-                                      "    ├── val/\n"
-                                      "    │   ├── class1/\n"
-                                      "    │   └── class2/\n"
-                                      "    └── test/ (可选)\n"
-                                      "        ├── class1/\n"
-                                      "        └── class2/")
-        elif struct_type == 3:  # 单层类别文件夹
-            self.struct_info_label.setText("文件夹结构示例:\n"
-                                      "└── dataset/\n"
-                                      "    ├── class1/\n"
-                                      "    │   ├── img1.jpg\n"
-                                      "    │   └── ...\n"
-                                      "    └── class2/\n"
-                                      "        ├── img2.jpg\n"
-                                      "        └── ...\n\n"
-                                      "系统将自动分割为训练集和验证集")
-
+        """保留这个方法以兼容旧代码，现在不需要实时更新UI"""
+        pass
+    
     def browse_data_file(self):
         """浏览选择数据配置文件"""
         file_path, _ = QFileDialog.getOpenFileName(self, "选择数据配置文件", "", "YAML文件 (*.yaml)")
@@ -967,7 +1010,6 @@ class TrainingTab(QWidget):
             if has_class_dirs:
                 # 这是预分割的分类数据集结构
                 self.presplit_folder_radio.setChecked(True)
-                self.update_folder_structure_info(2)
                 return
         
         # 检查是否为单层类别文件夹结构
@@ -991,12 +1033,10 @@ class TrainingTab(QWidget):
         if has_potential_class_dirs and has_images:
             # 这可能是单层类别文件夹结构
             self.single_folder_radio.setChecked(True)
-            self.update_folder_structure_info(3)
             return
         
         # 默认使用直接文件夹模式
         self.direct_folder_radio.setChecked(True)
-        self.update_folder_structure_info(1)
     
     def generate_yaml_config(self):
         """从训练文件夹生成YAML配置"""
