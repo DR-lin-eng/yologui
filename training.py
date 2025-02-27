@@ -104,8 +104,8 @@ class TrainingManager(QObject):
         self.total_epochs = int(params.get('epochs', 100))
         self.current_metrics = {}
         
-        # 构建命令
-        cmd = [sys.executable, "-m", "ultralytics"]
+        # 构建命令 - 修复: 使用正确的ultralytics调用方式
+        cmd = [sys.executable, "-m", "ultralytics.yolo"]
         
         # 确定任务类型
         task = params.get('task', 'detect')
@@ -123,17 +123,28 @@ class TrainingManager(QObject):
             # 其他任务使用data.yaml
             cmd.append(f"data={params['data_path']}")
         
-        # 添加其他参数
+        # 添加其他参数 - 只添加非默认参数
+        default_params = {
+            'batch': 16,
+            'imgsz': 640,
+            'epochs': 100,
+            'patience': 50,
+            'lr0': 0.01,
+            'lrf': 0.01
+        }
+        
         for key, value in params.items():
             if key not in ['data_path', 'train_folder', 'is_classification', 'direct_folder_mode']:
-                if key == 'model' and task == 'classify' and 'cls' not in value:
-                    # 确保分类任务使用分类模型
-                    model_name = value.split('.')[0]
-                    if not model_name.endswith('-cls'):
-                        model_name += '-cls'
-                    cmd.append(f"model={model_name}.pt")
-                elif key != 'task':  # 不要重复添加task
-                    cmd.append(f"{key}={value}")
+                # 只添加非默认值或明确需要的值
+                if key == 'model' or key not in default_params or value != default_params.get(key):
+                    if key == 'model' and task == 'classify' and 'cls' not in value:
+                        # 确保分类任务使用分类模型
+                        model_name = value.split('.')[0]
+                        if not model_name.endswith('-cls'):
+                            model_name += '-cls'
+                        cmd.append(f"model={model_name}.pt")
+                    elif key != 'task':  # 不要重复添加task
+                        cmd.append(f"{key}={value}")
         
         print(f"执行命令: {' '.join(cmd)}")
         

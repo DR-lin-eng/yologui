@@ -362,24 +362,106 @@ class TrainingTab(QWidget):
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
         
-        # 数据选择区域
-        data_group = QGroupBox("数据集选择")
-        data_layout = QVBoxLayout(data_group)
-        data_layout.setSpacing(10)
+        # ====== 必要参数区域 ======
+        essential_group = QGroupBox("核心参数")
+        essential_layout = QFormLayout(essential_group)
+        essential_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        essential_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        essential_layout.setSpacing(10)
         
         # 选择任务类型
-        task_layout = QHBoxLayout()
-        self.task_label = QLabel("任务类型:")
         self.task_combo = QComboBox()
         self.task_combo.addItems(["目标检测 (detect)", "分割 (segment)", "分类 (classify)", "姿态估计 (pose)"])
         self.task_combo.setCurrentIndex(0)
         self.task_combo.currentIndexChanged.connect(self.on_task_changed)
+        essential_layout.addRow("任务类型:", self.task_combo)
         
-        task_layout.addWidget(self.task_label)
-        task_layout.addWidget(self.task_combo)
-        task_layout.addStretch()
+        # 数据配置文件
+        self.data_path_layout = QHBoxLayout()
+        self.data_path_input = QLineEdit()
+        self.data_path_input.setPlaceholderText("选择数据集YAML文件")
+        self.data_path_browse = QPushButton("浏览...")
+        self.data_path_browse.clicked.connect(self.browse_data_file)
+        self.data_view_button = QPushButton("查看/编辑")
+        self.data_view_button.clicked.connect(self.view_data_config)
         
-        data_layout.addLayout(task_layout)
+        self.data_path_layout.addWidget(self.data_path_input, 1)
+        self.data_path_layout.addWidget(self.data_path_browse)
+        self.data_path_layout.addWidget(self.data_view_button)
+        essential_layout.addRow("数据配置:", self.data_path_layout)
+        
+        # 模型选择
+        self.model_layout = QHBoxLayout()
+        self.model_combo = QComboBox()
+        self.model_combo.addItems([
+            "yolov8n.pt",  # Nano
+            "yolov8s.pt",  # Small
+            "yolov8m.pt",  # Medium
+            "yolov8l.pt",  # Large
+            "yolov8x.pt"   # XLarge
+        ])
+        self.model_browse = QPushButton("浏览...")
+        self.model_browse.clicked.connect(self.browse_model_file)
+        
+        self.model_layout.addWidget(self.model_combo, 1)
+        self.model_layout.addWidget(self.model_browse)
+        essential_layout.addRow("模型:", self.model_layout)
+        
+        # 关键参数
+        self.batch_spinbox = QSpinBox()
+        self.batch_spinbox.setRange(1, 128)
+        self.batch_spinbox.setValue(parameters['data']['batch'])
+        essential_layout.addRow("批次大小:", self.batch_spinbox)
+        
+        self.imgsz_spinbox = QSpinBox()
+        self.imgsz_spinbox.setRange(32, 1280)
+        self.imgsz_spinbox.setValue(parameters['data']['imgsz'])
+        self.imgsz_spinbox.setSingleStep(32)
+        essential_layout.addRow("图像大小:", self.imgsz_spinbox)
+        
+        self.epochs_spinbox = QSpinBox()
+        self.epochs_spinbox.setRange(1, 1000)
+        self.epochs_spinbox.setValue(parameters['training']['epochs'])
+        essential_layout.addRow("训练轮数:", self.epochs_spinbox)
+        
+        # 学习率
+        self.lr0_spinbox = QDoubleSpinBox()
+        self.lr0_spinbox.setRange(0.0001, 0.1)
+        self.lr0_spinbox.setValue(parameters['training']['lr0'])
+        self.lr0_spinbox.setDecimals(5)
+        self.lr0_spinbox.setSingleStep(0.001)
+        essential_layout.addRow("初始学习率:", self.lr0_spinbox)
+        
+        left_layout.addWidget(essential_group)
+        
+        # CUDA选择区域
+        cuda_group = QGroupBox("硬件加速")
+        cuda_layout = QGridLayout(cuda_group)
+        
+        self.cuda_available_label = QLabel("CUDA可用: 未检测")
+        self.use_cuda_checkbox = QCheckBox("使用CUDA训练")
+        self.use_cuda_checkbox.setChecked(True)
+        self.device_label = QLabel("设备:")
+        self.device_combo = QComboBox()
+        self.device_combo.addItem("")  # 自动选择
+        
+        cuda_layout.addWidget(self.cuda_available_label, 0, 0)
+        cuda_layout.addWidget(self.use_cuda_checkbox, 0, 1)
+        cuda_layout.addWidget(self.device_label, 1, 0)
+        cuda_layout.addWidget(self.device_combo, 1, 1)
+        
+        left_layout.addWidget(cuda_group)
+        
+        # ====== 高级参数区域 ======
+        # 创建可折叠的高级参数区域
+        advanced_box = CollapsibleBox("高级参数")
+        advanced_widget = QWidget()
+        advanced_layout = QVBoxLayout(advanced_widget)
+        
+        # 数据选择区域
+        data_group = QGroupBox("数据集选择")
+        data_layout = QVBoxLayout(data_group)
+        data_layout.setSpacing(10)
         
         # 选择数据模式
         self.data_mode_label = QLabel("数据模式:")
@@ -395,25 +477,16 @@ class TrainingTab(QWidget):
         
         data_layout.addLayout(data_mode_layout)
         
-        # YAML配置文件选择
+        # YAML配置文件选择 - 这部分已经移到核心参数中，这里只是备用
         self.yaml_group = QWidget()
         yaml_layout = QHBoxLayout(self.yaml_group)
         yaml_layout.setContentsMargins(0, 0, 0, 0)
         
         self.data_path_label = QLabel("数据配置文件:")
-        self.data_path_input = QLineEdit()
-        self.data_path_input.setPlaceholderText("选择数据集YAML文件")
-        self.data_path_browse = QPushButton("浏览...")
-        self.data_path_browse.clicked.connect(self.browse_data_file)
-        self.data_view_button = QPushButton("查看/编辑配置")
-        self.data_view_button.clicked.connect(self.view_data_config)
-        
         yaml_layout.addWidget(self.data_path_label)
-        yaml_layout.addWidget(self.data_path_input, 1)
-        yaml_layout.addWidget(self.data_path_browse)
-        yaml_layout.addWidget(self.data_view_button)
         
         data_layout.addWidget(self.yaml_group)
+        self.yaml_group.setVisible(False)  # 默认隐藏，已经在上面显示
         
         # 训练文件夹选择
         self.folder_group = QWidget()
@@ -527,63 +600,37 @@ class TrainingTab(QWidget):
         # 默认显示YAML配置模式
         self.folder_group.setVisible(False)
         
-        left_layout.addWidget(data_group)
-        
-        # 模型选择区域
-        model_group = QGroupBox("模型选择")
-        model_layout = QHBoxLayout(model_group)
-        
-        self.model_label = QLabel("模型:")
-        self.model_combo = QComboBox()
-        self.model_combo.addItems([
-            "yolov8n.pt",  # Nano
-            "yolov8s.pt",  # Small
-            "yolov8m.pt",  # Medium
-            "yolov8l.pt",  # Large
-            "yolov8x.pt"   # XLarge
-        ])
-        self.model_browse = QPushButton("浏览...")
-        self.model_browse.clicked.connect(self.browse_model_file)
-        
-        model_layout.addWidget(self.model_label)
-        model_layout.addWidget(self.model_combo)
-        model_layout.addWidget(self.model_browse)
-        
-        left_layout.addWidget(model_group)
-        
-        # CUDA选择
-        cuda_group = QGroupBox("CUDA设置")
-        cuda_layout = QHBoxLayout(cuda_group)
-        
-        self.cuda_available_label = QLabel("CUDA可用: 未检测")
-        self.use_cuda_checkbox = QCheckBox("使用CUDA训练")
-        self.use_cuda_checkbox.setChecked(True)
-        self.device_label = QLabel("设备:")
-        self.device_combo = QComboBox()
-        self.device_combo.addItem("")  # 自动选择
-        
-        cuda_layout.addWidget(self.cuda_available_label)
-        cuda_layout.addWidget(self.use_cuda_checkbox)
-        cuda_layout.addWidget(self.device_label)
-        cuda_layout.addWidget(self.device_combo)
-        
-        left_layout.addWidget(cuda_group)
+        advanced_layout.addWidget(data_group)
         
         # 创建参数分组的滚动区域
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
+        scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout(scroll_widget)
         
-        # 训练参数分组
+        # 创建优化器组
+        optimizer_group = self.create_optimizer_param_group()
+        scroll_layout.addWidget(optimizer_group)
+        
+        # 创建增强组
+        augment_group = self.create_augment_param_group()
+        scroll_layout.addWidget(augment_group)
+        
+        # 添加其他参数组
         for group_name, group_params in parameters.items():
-            param_group = ParameterGroup(group_name.capitalize(), group_params)
-            param_group.parameterSelected.connect(self.on_parameter_selected)
-            self.param_groups[group_name] = param_group
-            scroll_layout.addWidget(param_group)
+            if group_name not in ['data', 'model', 'training', 'hyp', 'augment']:
+                param_group = ParameterGroup(group_name.capitalize(), group_params)
+                param_group.parameterSelected.connect(self.on_parameter_selected)
+                self.param_groups[group_name] = param_group
+                scroll_layout.addWidget(param_group)
         
         scroll_area.setWidget(scroll_widget)
-        left_layout.addWidget(scroll_area, 1)  # 添加滚动区并设置拉伸因子
+        advanced_layout.addWidget(scroll_area, 1)  # 添加拉伸因子
+        
+        # 设置高级参数区域的内容
+        advanced_box.add_widget(advanced_widget)
+        left_layout.addWidget(advanced_box)
         
         # 右侧参数说明区域
         right_widget = QWidget()
@@ -655,6 +702,144 @@ class TrainingTab(QWidget):
                                   "- imgsz: 输入图像大小，单位为像素\n"
                                   "- epochs: 训练总轮数\n"
                                   "- device: 训练设备，空为自动选择")
+                                  
+        # 尝试自动检测并填充数据路径
+        self.auto_detect_data_path()
+    
+    def create_optimizer_param_group(self):
+        """创建优化器参数组"""
+        group = CollapsibleBox("优化器参数")
+        widget = QWidget()
+        layout = QFormLayout(widget)
+        layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        
+        # 添加优化器选择
+        self.optimizer_combo = QComboBox()
+        self.optimizer_combo.addItems(["SGD", "Adam", "AdamW"])
+        self.optimizer_combo.setCurrentText(self.parameters['training']['optimizer'])
+        layout.addRow("优化器:", self.optimizer_combo)
+        
+        # 添加动量参数
+        self.momentum_spinbox = QDoubleSpinBox()
+        self.momentum_spinbox.setRange(0.0, 0.999)
+        self.momentum_spinbox.setValue(self.parameters['training']['momentum'])
+        self.momentum_spinbox.setSingleStep(0.01)
+        self.momentum_spinbox.setDecimals(3)
+        layout.addRow("动量:", self.momentum_spinbox)
+        
+        # 添加权重衰减
+        self.weight_decay_spinbox = QDoubleSpinBox()
+        self.weight_decay_spinbox.setRange(0.0, 0.1)
+        self.weight_decay_spinbox.setValue(self.parameters['training']['weight_decay'])
+        self.weight_decay_spinbox.setSingleStep(0.0001)
+        self.weight_decay_spinbox.setDecimals(5)
+        layout.addRow("权重衰减:", self.weight_decay_spinbox)
+        
+        # 添加余弦学习率
+        self.cos_lr_checkbox = QCheckBox()
+        self.cos_lr_checkbox.setChecked(self.parameters['training']['cos_lr'])
+        layout.addRow("余弦学习率调度:", self.cos_lr_checkbox)
+        
+        # 添加混合精度训练
+        self.amp_checkbox = QCheckBox()
+        self.amp_checkbox.setChecked(self.parameters['training']['amp'])
+        layout.addRow("混合精度训练:", self.amp_checkbox)
+        
+        group.add_widget(widget)
+        return group
+    
+    def create_augment_param_group(self):
+        """创建数据增强参数组"""
+        group = CollapsibleBox("数据增强参数")
+        widget = QWidget()
+        layout = QFormLayout(widget)
+        layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        
+        # 添加HSV增强参数
+        self.hsv_h_spinbox = QDoubleSpinBox()
+        self.hsv_h_spinbox.setRange(0.0, 1.0)
+        self.hsv_h_spinbox.setValue(self.parameters['hyp']['hsv_h'])
+        self.hsv_h_spinbox.setSingleStep(0.01)
+        self.hsv_h_spinbox.setDecimals(3)
+        layout.addRow("HSV色调增强:", self.hsv_h_spinbox)
+        
+        self.hsv_s_spinbox = QDoubleSpinBox()
+        self.hsv_s_spinbox.setRange(0.0, 1.0)
+        self.hsv_s_spinbox.setValue(self.parameters['hyp']['hsv_s'])
+        self.hsv_s_spinbox.setSingleStep(0.01)
+        self.hsv_s_spinbox.setDecimals(3)
+        layout.addRow("HSV饱和度增强:", self.hsv_s_spinbox)
+        
+        self.hsv_v_spinbox = QDoubleSpinBox()
+        self.hsv_v_spinbox.setRange(0.0, 1.0)
+        self.hsv_v_spinbox.setValue(self.parameters['hyp']['hsv_v'])
+        self.hsv_v_spinbox.setSingleStep(0.01)
+        self.hsv_v_spinbox.setDecimals(3)
+        layout.addRow("HSV亮度增强:", self.hsv_v_spinbox)
+        
+        # 添加几何增强参数
+        self.fliplr_spinbox = QDoubleSpinBox()
+        self.fliplr_spinbox.setRange(0.0, 1.0)
+        self.fliplr_spinbox.setValue(self.parameters['hyp']['fliplr'])
+        self.fliplr_spinbox.setSingleStep(0.01)
+        self.fliplr_spinbox.setDecimals(2)
+        layout.addRow("水平翻转概率:", self.fliplr_spinbox)
+        
+        self.mosaic_spinbox = QDoubleSpinBox()
+        self.mosaic_spinbox.setRange(0.0, 1.0)
+        self.mosaic_spinbox.setValue(self.parameters['hyp']['mosaic'])
+        self.mosaic_spinbox.setSingleStep(0.01)
+        self.mosaic_spinbox.setDecimals(2)
+        layout.addRow("马赛克增强概率:", self.mosaic_spinbox)
+        
+        self.mixup_spinbox = QDoubleSpinBox()
+        self.mixup_spinbox.setRange(0.0, 1.0)
+        self.mixup_spinbox.setValue(self.parameters['hyp']['mixup'])
+        self.mixup_spinbox.setSingleStep(0.01)
+        self.mixup_spinbox.setDecimals(2)
+        layout.addRow("Mixup增强概率:", self.mixup_spinbox)
+        
+        group.add_widget(widget)
+        return group
+    
+    def auto_detect_data_path(self):
+        """自动检测并填充数据路径"""
+        # 首先检查当前目录
+        current_dir = os.getcwd()
+        
+        # 检查各种常见的数据目录名
+        common_dirs = ["data", "datasets", "dataset", "yolo_data", "images", "annotations"]
+        for dir_name in common_dirs:
+            dir_path = os.path.join(current_dir, dir_name)
+            if os.path.isdir(dir_path):
+                # 搜索data.yaml文件
+                yaml_path = os.path.join(dir_path, "data.yaml")
+                if os.path.exists(yaml_path):
+                    self.data_path_input.setText(yaml_path)
+                    return
+        
+        # 递归搜索前三层目录
+        def search_yaml(directory, depth=0):
+            if depth > 2:  # 限制搜索深度
+                return None
+            
+            for root, dirs, files in os.walk(directory):
+                for file in files:
+                    if file == "data.yaml":
+                        return os.path.join(root, file)
+                
+                # 递归搜索一层
+                for dir_name in dirs:
+                    result = search_yaml(os.path.join(root, dir_name), depth + 1)
+                    if result:
+                        return result
+            
+            return None
+        
+        # 执行搜索
+        yaml_path = search_yaml(current_dir)
+        if yaml_path:
+            self.data_path_input.setText(yaml_path)
     
     def on_parameter_selected(self, name, description):
         """参数被选择时更新右侧说明区域"""
@@ -1100,8 +1285,12 @@ class TrainingTab(QWidget):
                 else:
                     params['data_path'] = yaml_path
         
-        # 获取模型
+        # 获取核心参数
         params['model'] = self.model_combo.currentText()
+        params['batch'] = self.batch_spinbox.value()
+        params['imgsz'] = self.imgsz_spinbox.value()
+        params['epochs'] = self.epochs_spinbox.value()
+        params['lr0'] = self.lr0_spinbox.value()
         
         # 如果是分类任务，确保使用分类模型
         if params.get('is_classification', False) and not params['model'].endswith('-cls.pt'):
@@ -1117,16 +1306,35 @@ class TrainingTab(QWidget):
                 f"检测到分类任务，已自动调整为分类模型: {params['model']}"
             )
         
+        # 获取优化器参数
+        params['optimizer'] = self.optimizer_combo.currentText()
+        params['momentum'] = self.momentum_spinbox.value()
+        params['weight_decay'] = self.weight_decay_spinbox.value()
+        params['cos_lr'] = self.cos_lr_checkbox.isChecked()
+        params['amp'] = self.amp_checkbox.isChecked()
+        
+        # 获取数据增强参数
+        params['hsv_h'] = self.hsv_h_spinbox.value()
+        params['hsv_s'] = self.hsv_s_spinbox.value()
+        params['hsv_v'] = self.hsv_v_spinbox.value()
+        params['fliplr'] = self.fliplr_spinbox.value()
+        params['mosaic'] = self.mosaic_spinbox.value()
+        params['mixup'] = self.mixup_spinbox.value()
+        
         # 获取CUDA设置
         if self.use_cuda_checkbox.isChecked():
             params['device'] = self.device_combo.currentText()
         else:
             params['device'] = 'cpu'
         
-        # 获取各个分组的参数
+        # 获取各个分组的参数（仅获取已更改的值）
         for group_name, param_group in self.param_groups.items():
             group_params = param_group.get_values()
-            params.update(group_params)
+            for k, v in group_params.items():
+                # 检查是否与默认值不同
+                default_value = self.parameters.get(group_name, {}).get(k)
+                if v != default_value:
+                    params[k] = v
         
         return params
     
@@ -1163,6 +1371,19 @@ class TrainingTab(QWidget):
         self.model_browse.setEnabled(not training)
         self.use_cuda_checkbox.setEnabled(not training)
         self.device_combo.setEnabled(not training)
+        
+        # 禁用/启用核心参数
+        self.batch_spinbox.setEnabled(not training)
+        self.imgsz_spinbox.setEnabled(not training)
+        self.epochs_spinbox.setEnabled(not training)
+        self.lr0_spinbox.setEnabled(not training)
+        
+        # 禁用/启用优化器参数
+        self.optimizer_combo.setEnabled(not training)
+        self.momentum_spinbox.setEnabled(not training)
+        self.weight_decay_spinbox.setEnabled(not training)
+        self.cos_lr_checkbox.setEnabled(not training)
+        self.amp_checkbox.setEnabled(not training)
         
         # 禁用/启用所有参数分组
         for group_name, param_group in self.param_groups.items():
