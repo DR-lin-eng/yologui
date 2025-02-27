@@ -42,7 +42,7 @@ YOLOv8 训练工具是一个图形界面应用程序，旨在简化YOLOv8模型�
 ```bash
 # 克隆仓库
 git clone https://github.com/DR-lin-eng/yologui.git
-cd yolov8-trainer
+cd yologui
 
 # 安装依赖
 pip install -r requirements.txt
