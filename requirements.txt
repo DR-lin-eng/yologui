@@ -1,0 +1,5 @@
+ultralytics>=8.0.0
+torch>=1.7.0
+torchvision>=0.8.1
+pyside6>=6.0.0
+pyyaml>=5.3.1
