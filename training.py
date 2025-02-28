@@ -11,6 +11,7 @@ import shutil
 from datetime import datetime, timedelta
 import subprocess
 from PySide6.QtCore import QObject, Signal, QThread, QMutex, QWaitCondition
+from PySide6.QtWidgets import QApplication
 
 from parameters import get_command_line_args
 
@@ -46,30 +47,26 @@ class TrainingThread(QThread):
                 errors='replace'   # 对于无法解码的字符，使用替代方式而不是报错
             )
             
-            # 读取进程输出
-            while self.process.poll() is None and not self.stopped:
-                try:
-                    line = self.process.stdout.readline()
+            # 创建一个线程来持续读取输出，避免缓冲区填满导致阻塞
+            def read_output():
+                for line in iter(self.process.stdout.readline, ''):
+                    if self.stopped:
+                        break
                     if line:
-                        # 发送进度更新
                         self.progress_line.emit(line.strip())
-                except UnicodeDecodeError as e:
-                    # 捕获并报告解码错误，但不中断训练
-                    print(f"解码错误: {str(e)}")
-                    self.progress_line.emit(f"[警告] 输出解码错误: {str(e)}")
+                        # 让UI有机会更新
+                        QApplication.processEvents()
             
-            # 如果进程仍在运行但线程被要求停止
-            if self.process.poll() is None and self.stopped:
-                # 尝试正常终止
-                self.process.terminate()
-                # 给进程一些时间来清理
-                time.sleep(2)
-                # 如果进程仍在运行，强制终止
-                if self.process.poll() is None:
-                    self.process.kill()
+            # 启动读取线程
+            read_thread = threading.Thread(target=read_output)
+            read_thread.daemon = True
+            read_thread.start()
             
-            # 检查进程返回值
+            # 等待进程完成
             exit_code = self.process.wait()
+            # 等待读取线程结束
+            read_thread.join(timeout=2)
+            
             if exit_code == 0 and not self.stopped:
                 self.finished.emit(True)
             else:
@@ -82,6 +79,16 @@ class TrainingThread(QThread):
         """停止训练线程"""
         self.stopped = True
         self.mutex.lock()
+        if self.process and self.process.poll() is None:
+            try:
+                # 尝试先正常终止
+                self.process.terminate()
+                time.sleep(1)
+                # 如果进程仍在运行，强制终止
+                if self.process.poll() is None:
+                    self.process.kill()
+            except:
+                pass
         self.condition.wakeAll()
         self.mutex.unlock()
     
@@ -108,6 +115,10 @@ class TrainingManager(QObject):
         # 如果已经有一个训练线程在运行，先停止它
         if self.training_thread and self.training_thread.isRunning():
             self.stop_training()
+        
+        # 确保params包含data_path键，以保持与main.py的兼容性
+        if 'data_path' not in params and 'train_folder' in params:
+            params['data_path'] = params['train_folder']
         
         # 重置状态
         self.start_time = datetime.now()
@@ -236,7 +247,29 @@ class TrainingManager(QObject):
             'epochs': 100,
             'patience': 50,
             'lr0': 0.01,
-            'lrf': 0.01
+            'lrf': 0.01,
+            'momentum': 0.937,
+            'weight_decay': 0.0005,
+            'warmup_epochs': 3.0,
+            'warmup_momentum': 0.8,
+            'warmup_bias_lr': 0.1,
+            'box': 7.5,
+            'cls': 0.5,
+            'dfl': 1.5,
+            'fl_gamma': 0.0,
+            'hsv_h': 0.015,
+            'hsv_s': 0.7,
+            'hsv_v': 0.4,
+            'degrees': 0.0,
+            'translate': 0.1,
+            'scale': 0.5,
+            'shear': 0.0,
+            'perspective': 0.0,
+            'flipud': 0.0,
+            'fliplr': 0.5,
+            'mosaic': 1.0,
+            'mixup': 0.0,
+            'copy_paste': 0.0
         }
         
         # 设置工作目录为项目目录，避免路径问题
@@ -260,8 +293,16 @@ class TrainingManager(QObject):
         env_vars = os.environ.copy()
         # 添加PYTHONIOENCODING环境变量以确保正确处理UTF-8
         env_vars["PYTHONIOENCODING"] = "utf-8"
-        if 'device' in params and params['device']:
-            env_vars['CUDA_VISIBLE_DEVICES'] = params['device'].replace('cuda:', '')
+        
+        # 处理device参数 - 确保有效值，避免空值引起错误
+        if 'device' in params:
+            device_value = params['device']
+            # 如果device为空字符串，默认使用所有可用设备(不设置CUDA_VISIBLE_DEVICES)
+            if device_value and device_value != 'cpu':
+                # 提取设备ID，去掉'cuda:'前缀
+                device_id = device_value.replace('cuda:', '')
+                if device_id and device_id.strip():
+                    env_vars['CUDA_VISIBLE_DEVICES'] = device_id
         
         # 创建并启动训练线程
         self.training_thread = TrainingThread(cmd, env_vars)
@@ -274,12 +315,23 @@ class TrainingManager(QObject):
         """停止训练进程"""
         if self.training_thread and self.training_thread.isRunning():
             self.training_thread.stop()
-            self.training_thread.wait()  # 等待线程结束
+            self.training_thread.wait(5000)  # 等待最多5秒让线程结束
+            # 如果线程仍然在运行，我们不再等待
+            if self.training_thread.isRunning():
+                print("警告: 训练线程没有及时结束")
     
     def process_progress_line(self, line):
         """处理训练进程的输出行"""
         # 尝试解析YOLOv8的输出
         try:
+            # 创建基本的进度信息结构
+            progress_info = {
+                'current_epoch': self.current_epoch,
+                'total_epochs': self.total_epochs,
+                'metrics': self.current_metrics.copy() if hasattr(self, 'current_metrics') else {},
+                'output_line': line
+            }
+            
             # 捕获训练目录
             if "Results saved to" in line:
                 try:
@@ -289,65 +341,105 @@ class TrainingManager(QObject):
                     self.training_dir = "runs/train/exp"
                     print(f"无法解析训练目录，使用默认值: {self.training_dir}")
             
-            # 捕获训练进度
-            if "Epoch" in line and "/" in line:
-                # 提取当前轮次和总轮次
-                try:
-                    epoch_match = re.search(r"Epoch\s+(\d+)/(\d+)", line)
-                    if epoch_match:
-                        self.current_epoch = int(epoch_match.group(1))
-                        self.total_epochs = int(epoch_match.group(2))
-                except:
-                    print("无法解析轮次信息")
+            # 匹配YOLOv8标准输出格式 - 例如： 1/100      1.49G      3.755         16        640:  90%|████████▉ | 2699/3000 [03:42<00:26, 11.17it/s]
+            epoch_pattern = r"^(\d+)/(\d+)\s+[\d\.]+G\s+([0-9\.]+)\s+\d+\s+\d+:\s+(\d+)%\|[^|]*\|\s*(\d+)/(\d+)"
+            epoch_match = re.search(epoch_pattern, line)
+            
+            if epoch_match:
+                # 获取当前轮次和总轮次
+                current_epoch = int(epoch_match.group(1))
+                total_epochs = int(epoch_match.group(2))
+                self.current_epoch = current_epoch
+                self.total_epochs = total_epochs
                 
-                # 提取指标
-                metrics = {}
-                try:
-                    metrics_matches = re.findall(r"(\w+)=([\d\.]+)", line)
-                    for key, value in metrics_matches:
-                        try:
-                            metrics[key] = float(value)
-                        except ValueError:
-                            metrics[key] = value
+                # 获取损失值
+                loss = float(epoch_match.group(3))
+                
+                # 获取进度百分比
+                percent = int(epoch_match.group(4))
+                
+                # 获取当前批次和总批次
+                current_batch = int(epoch_match.group(5))
+                total_batch = int(epoch_match.group(6))
+                
+                # 计算更精确的进度
+                if current_epoch > 0 and total_epochs > 0:
+                    # 计算轮次进度和批次进度的组合
+                    epoch_progress = (current_epoch - 1) / total_epochs
+                    batch_progress = (current_batch / total_batch) / total_epochs
+                    total_progress = (epoch_progress + batch_progress) * 100
+                    progress_info['progress'] = total_progress
+                
+                # 提取时间信息 [03:42<00:26, 11.17it/s]
+                time_pattern = r"\[(\d+):(\d+)<(\d+):(\d+)"
+                time_match = re.search(time_pattern, line)
+                if time_match:
+                    elapsed_min = int(time_match.group(1))
+                    elapsed_sec = int(time_match.group(2))
+                    remain_min = int(time_match.group(3))
+                    remain_sec = int(time_match.group(4))
                     
-                    self.current_metrics = metrics
-                except:
-                    print("无法解析训练指标")
+                    elapsed_time = str(timedelta(minutes=elapsed_min, seconds=elapsed_sec))
+                    eta = str(timedelta(minutes=remain_min, seconds=remain_sec))
+                    
+                    progress_info['elapsed_time'] = elapsed_time
+                    progress_info['eta'] = eta
                 
-                # 计算估计剩余时间
-                elapsed_time = (datetime.now() - self.start_time).total_seconds()
-                if self.current_epoch > 0:
-                    time_per_epoch = elapsed_time / self.current_epoch
-                    remaining_epochs = self.total_epochs - self.current_epoch
-                    eta_seconds = time_per_epoch * remaining_epochs
-                    eta = str(timedelta(seconds=int(eta_seconds)))
-                else:
-                    eta = "计算中..."
+                # 更新当前指标
+                self.current_metrics['loss'] = loss
+                progress_info['metrics'] = self.current_metrics.copy()
+            
+            # 匹配验证指标行 - 例如： classes   top1_acc   top5_acc:   0%|          | 0/300 [00:00<?, ?it/s]
+            val_pattern = r"classes\s+top1_acc\s+top5_acc"
+            if re.search(val_pattern, line):
+                # 这是验证进度行，但还没有指标值
+                pass
+            
+            # 捕获最终指标 - 例如: all      0.911      0.983
+            final_metrics_pattern = r"all\s+(\d+\.\d+)\s+(\d+\.\d+)"
+            metrics_match = re.search(final_metrics_pattern, line)
+            if metrics_match:
+                top1_acc = float(metrics_match.group(1))
+                top5_acc = float(metrics_match.group(2))
                 
-                # 发送进度更新
-                progress_info = {
-                    'current_epoch': self.current_epoch,
-                    'total_epochs': self.total_epochs,
-                    'metrics': self.current_metrics,
-                    'elapsed_time': str(timedelta(seconds=int(elapsed_time))),
-                    'eta': eta,
-                    'progress': self.current_epoch / self.total_epochs * 100,
-                    'output_line': line
-                }
+                # 更新指标
+                self.current_metrics['top1_acc'] = top1_acc
+                self.current_metrics['top5_acc'] = top5_acc
                 
-                self.progress_update.emit(progress_info)
-            else:
-                # 其他输出行
-                progress_info = {
-                    'current_epoch': self.current_epoch,
-                    'total_epochs': self.total_epochs,
-                    'metrics': self.current_metrics,
-                    'output_line': line
-                }
-                self.progress_update.emit(progress_info)
+                # 分类任务中，为了兼容性，同时也设置 mAP 指标（虽然技术上不准确，但UI需要）
+                self.current_metrics['mAP50-95'] = top1_acc  # 使用top1_acc作为主要指标
+                self.current_metrics['precision'] = top1_acc  # 为了UI显示
+                self.current_metrics['recall'] = top5_acc  # 为了UI显示
+                
+                progress_info['metrics'] = self.current_metrics.copy()
+            
+            # 对于检测/分割任务，捕获mAP值
+            map_pattern = r"mAP50-95\s+([0-9\.]+).+mAP50\s+([0-9\.]+)"
+            map_match = re.search(map_pattern, line)
+            if map_match:
+                map50_95 = float(map_match.group(1))
+                map50 = float(map_match.group(2))
+                
+                self.current_metrics['mAP50-95'] = map50_95
+                self.current_metrics['mAP50'] = map50
+                progress_info['metrics'] = self.current_metrics.copy()
+            
+            # 捕获precision和recall
+            pr_pattern = r"precision\s+([0-9\.]+).+recall\s+([0-9\.]+)"
+            pr_match = re.search(pr_pattern, line)
+            if pr_match:
+                precision = float(pr_match.group(1))
+                recall = float(pr_match.group(2))
+                
+                self.current_metrics['precision'] = precision
+                self.current_metrics['recall'] = recall
+                progress_info['metrics'] = self.current_metrics.copy()
+            
+            # 发送进度更新
+            self.progress_update.emit(progress_info)
                 
         except Exception as e:
-            print(f"处理输出行时出错: {str(e)}")
+            print(f"处理输出行时出错: {str(e)}\n行内容: {line}")
             # 即使解析出错，仍然发送原始行
             self.progress_update.emit({'output_line': line})
     
