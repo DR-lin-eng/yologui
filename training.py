@@ -22,6 +22,8 @@ class TrainingThread(QThread):
         super().__init__()
         self.command = command
         self.env = env if env else os.environ.copy()
+        # 设置UTF-8编码环境变量以解决中文路径问题
+        self.env["PYTHONIOENCODING"] = "utf-8"
         self.process = None
         self.stopped = False
         self.mutex = QMutex()
@@ -31,6 +33,7 @@ class TrainingThread(QThread):
         """运行训练进程"""
         # 启动进程并重定向输出
         try:
+            # 确保使用UTF-8编码处理所有输出
             self.process = subprocess.Popen(
                 self.command,
                 stdout=subprocess.PIPE,
@@ -38,15 +41,22 @@ class TrainingThread(QThread):
                 text=True,
                 bufsize=1,
                 universal_newlines=True,
-                env=self.env
+                env=self.env,
+                encoding='utf-8',  # 明确指定UTF-8编码
+                errors='replace'   # 对于无法解码的字符，使用替代方式而不是报错
             )
             
             # 读取进程输出
             while self.process.poll() is None and not self.stopped:
-                line = self.process.stdout.readline()
-                if line:
-                    # 发送进度更新
-                    self.progress_line.emit(line.strip())
+                try:
+                    line = self.process.stdout.readline()
+                    if line:
+                        # 发送进度更新
+                        self.progress_line.emit(line.strip())
+                except UnicodeDecodeError as e:
+                    # 捕获并报告解码错误，但不中断训练
+                    print(f"解码错误: {str(e)}")
+                    self.progress_line.emit(f"[警告] 输出解码错误: {str(e)}")
             
             # 如果进程仍在运行但线程被要求停止
             if self.process.poll() is None and self.stopped:
@@ -117,20 +127,90 @@ class TrainingManager(QObject):
         
         # 确定任务类型
         task = params.get('task', 'detect')
-        if params.get('is_classification', False):
+        is_classification = params.get('is_classification', False) or task == 'classify'
+        if is_classification:
             task = 'classify'
         
         # 添加任务类型和train命令
         cmd.append(task)
         cmd.append('train')
         
-        # 处理数据路径
-        if task == 'classify' and params.get('direct_folder_mode', False):
-            # 分类任务直接使用文件夹
-            cmd.append(f"data={params['train_folder']}")
-        else:
-            # 其他任务使用data.yaml
-            cmd.append(f"data={params['data_path']}")
+        # 处理数据路径 - 确保使用正斜杠以避免Windows路径转义问题
+        data_arg_added = False  # 跟踪是否已经添加了data参数
+        
+        if is_classification and params.get('direct_folder_mode', False):
+            # 分类任务直接使用文件夹 - 确保直接指向目录而不是YAML文件
+            folder_path = params['train_folder'].replace('\\', '/')
+            # 移除末尾的斜杠（如果有）
+            folder_path = folder_path.rstrip('/')
+            
+            # 检查目录结构
+            train_dir_exists = os.path.isdir(os.path.join(folder_path, 'train'))
+            val_dir_exists = os.path.isdir(os.path.join(folder_path, 'val'))
+            
+            # 如果文件夹结构正确 (有train和val子目录)
+            if train_dir_exists and val_dir_exists:
+                # 直接使用该目录
+                cmd.append(f"data={folder_path}")
+                data_arg_added = True
+            else:
+                # 检查目录中是否有类别子目录
+                has_class_dirs = False
+                class_dirs = []
+                
+                for item in os.listdir(folder_path):
+                    item_path = os.path.join(folder_path, item)
+                    if os.path.isdir(item_path) and not item.startswith('.'):
+                        has_class_dirs = True
+                        class_dirs.append(item)
+                
+                # 如果有类别子目录，则可以使用split参数
+                if has_class_dirs:
+                    cmd.append(f"data={folder_path}")
+                    cmd.append("split=0.9")  # 90%训练、10%验证
+                    data_arg_added = True
+                    print(f"检测到分类数据文件夹，将使用自动分割: {folder_path}")
+                    print(f"发现类别: {', '.join(class_dirs)}")
+                else:
+                    self.error.emit(f"无效的分类数据目录: {folder_path}\n需要train/val子目录或类别子目录")
+                    return
+        
+        # 如果尚未添加data参数，处理常规模式
+        if not data_arg_added:
+            if 'data_path' in params:
+                # 确保对于分类任务，我们传递的是目录而不是YAML文件
+                data_path = params['data_path'].replace('\\', '/')
+                
+                # 检查如果是分类任务，且路径以.yaml结尾
+                if is_classification and data_path.lower().endswith('.yaml'):
+                    # 尝试读取YAML文件以获取正确的数据路径
+                    try:
+                        import yaml
+                        with open(data_path, 'r', encoding='utf-8') as f:
+                            yaml_data = yaml.safe_load(f)
+                        
+                        # 如果YAML包含路径信息，使用它
+                        if 'path' in yaml_data:
+                            actual_path = yaml_data['path']
+                            # 如果是相对路径，相对于YAML所在目录
+                            if not os.path.isabs(actual_path):
+                                yaml_dir = os.path.dirname(data_path)
+                                actual_path = os.path.join(yaml_dir, actual_path)
+                            cmd.append(f"data={actual_path.replace('\\', '/')}")
+                        else:
+                            # 使用YAML文件所在的目录
+                            cmd.append(f"data={os.path.dirname(data_path).replace('\\', '/')}")
+                    except Exception as e:
+                        print(f"处理YAML文件时出错: {e}")
+                        # 回退到使用原始路径
+                        cmd.append(f"data={data_path}")
+                else:
+                    # 非分类任务或非YAML文件，直接使用
+                    cmd.append(f"data={data_path}")
+            elif is_classification and 'train_folder' in params:
+                # 如果没有data_path但有train_folder，使用训练文件夹
+                folder_path = params['train_folder'].replace('\\', '/')
+                cmd.append(f"data={folder_path}")
         
         # 添加模型参数
         if 'model' in params:
@@ -144,31 +224,47 @@ class TrainingManager(QObject):
             else:
                 cmd.append(f"model={model_param}")
         
+        # 添加图像大小参数 - 对于分类任务非常重要
+        if is_classification:
+            imgsz = params.get('imgsz', 224)  # 分类默认使用224
+            cmd.append(f"imgsz={imgsz}")
+        
         # 添加其他参数 - 只添加非默认参数
         default_params = {
             'batch': 16,
-            'imgsz': 640,
+            'imgsz': 640,  # 检测默认640，分类默认224
             'epochs': 100,
             'patience': 50,
             'lr0': 0.01,
             'lrf': 0.01
         }
         
+        # 设置工作目录为项目目录，避免路径问题
+        if 'project' in params:
+            project_path = params['project'].replace('\\', '/')
+            cmd.append(f"project={project_path}")
+        
         for key, value in params.items():
-            if key not in ['data_path', 'train_folder', 'is_classification', 'direct_folder_mode', 'model', 'task']:
+            if key not in ['data_path', 'train_folder', 'is_classification', 'direct_folder_mode', 'model', 'task', 'project', 'imgsz']:
                 # 只添加非默认值或明确需要的值
                 if key not in default_params or value != default_params.get(key):
+                    # 如果是路径类型的参数，确保使用正斜杠
+                    if key.endswith('_path') or key in ['save_dir']:
+                        if isinstance(value, str):
+                            value = value.replace('\\', '/')
                     cmd.append(f"{key}={value}")
         
         print(f"执行命令: {' '.join(cmd)}")
         
         # 设置环境变量
-        env = os.environ.copy()
+        env_vars = os.environ.copy()
+        # 添加PYTHONIOENCODING环境变量以确保正确处理UTF-8
+        env_vars["PYTHONIOENCODING"] = "utf-8"
         if 'device' in params and params['device']:
-            env['CUDA_VISIBLE_DEVICES'] = params['device'].replace('cuda:', '')
+            env_vars['CUDA_VISIBLE_DEVICES'] = params['device'].replace('cuda:', '')
         
         # 创建并启动训练线程
-        self.training_thread = TrainingThread(cmd, env)
+        self.training_thread = TrainingThread(cmd, env_vars)
         self.training_thread.progress_line.connect(self.process_progress_line)
         self.training_thread.finished.connect(self.training_finished)
         self.training_thread.error.connect(self.training_error)
@@ -186,26 +282,37 @@ class TrainingManager(QObject):
         try:
             # 捕获训练目录
             if "Results saved to" in line:
-                self.training_dir = re.search(r"Results saved to\s+([^\s]+)", line).group(1)
+                try:
+                    self.training_dir = re.search(r"Results saved to\s+([^\s]+)", line).group(1)
+                except:
+                    # 如果无法解析路径，使用一个安全的默认值
+                    self.training_dir = "runs/train/exp"
+                    print(f"无法解析训练目录，使用默认值: {self.training_dir}")
             
             # 捕获训练进度
             if "Epoch" in line and "/" in line:
                 # 提取当前轮次和总轮次
-                epoch_match = re.search(r"Epoch\s+(\d+)/(\d+)", line)
-                if epoch_match:
-                    self.current_epoch = int(epoch_match.group(1))
-                    self.total_epochs = int(epoch_match.group(2))
+                try:
+                    epoch_match = re.search(r"Epoch\s+(\d+)/(\d+)", line)
+                    if epoch_match:
+                        self.current_epoch = int(epoch_match.group(1))
+                        self.total_epochs = int(epoch_match.group(2))
+                except:
+                    print("无法解析轮次信息")
                 
                 # 提取指标
                 metrics = {}
-                metrics_matches = re.findall(r"(\w+)=([\d\.]+)", line)
-                for key, value in metrics_matches:
-                    try:
-                        metrics[key] = float(value)
-                    except ValueError:
-                        metrics[key] = value
-                
-                self.current_metrics = metrics
+                try:
+                    metrics_matches = re.findall(r"(\w+)=([\d\.]+)", line)
+                    for key, value in metrics_matches:
+                        try:
+                            metrics[key] = float(value)
+                        except ValueError:
+                            metrics[key] = value
+                    
+                    self.current_metrics = metrics
+                except:
+                    print("无法解析训练指标")
                 
                 # 计算估计剩余时间
                 elapsed_time = (datetime.now() - self.start_time).total_seconds()
