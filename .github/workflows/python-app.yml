@@ -12,10 +12,11 @@ jobs:
     runs-on: windows-latest
     
     steps:
-    - uses: actions/checkout@v3
+    - name: Checkout repository
+      uses: actions/checkout@v2
     
     - name: Set up Python 3.10
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v2
       with:
         python-version: '3.10'
         
@@ -29,18 +30,14 @@ jobs:
       run: |
         pyinstaller --name="YOLOv8_Trainer" --onefile --windowed --icon=icon.png --add-data="icon.png;." main.py
     
-    # Alternative approach without using actions/upload-artifact
-    - name: Create artifact directory
+    - name: Create artifacts directory
       run: mkdir artifacts
       
     - name: Copy executable to artifacts directory
       run: copy dist\YOLOv8_Trainer.exe artifacts\
       
-    - name: Archive artifacts
+    - name: Upload executable
       uses: actions/upload-artifact@v2
       with:
         name: YOLOv8_Trainer_Windows
         path: artifacts\YOLOv8_Trainer.exe
-      with:
-        name: YOLOv8_Trainer_Windows
-        path: dist/YOLOv8_Trainer.exe
