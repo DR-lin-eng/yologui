@@ -30,14 +30,25 @@ jobs:
       run: |
         pyinstaller --name="YOLOv8_Trainer" --onefile --windowed --icon=icon.png --add-data="icon.png;." main.py
     
-    - name: Create artifacts directory
-      run: mkdir artifacts
-      
-    - name: Copy executable to artifacts directory
-      run: copy dist\YOLOv8_Trainer.exe artifacts\
-      
-    - name: Upload executable
-      uses: actions/upload-artifact@v2
+    # Instead of using actions/upload-artifact, just create a release
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        name: YOLOv8_Trainer_Windows
-        path: artifacts\YOLOv8_Trainer.exe
+        tag_name: v${{ github.run_number }}
+        release_name: Build ${{ github.run_number }}
+        draft: false
+        prerelease: false
+        
+    # Upload the executable as a release asset
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./dist/YOLOv8_Trainer.exe
+        asset_name: YOLOv8_Trainer.exe
+        asset_content_type: application/octet-stream
