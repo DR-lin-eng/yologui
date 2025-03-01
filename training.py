@@ -207,10 +207,15 @@ class TrainingManager(QObject):
                             if not os.path.isabs(actual_path):
                                 yaml_dir = os.path.dirname(data_path)
                                 actual_path = os.path.join(yaml_dir, actual_path)
-                            cmd.append(f"data={actual_path.replace('\\', '/')}")
+                            
+                            # 修复 f-string 问题 - 不在表达式内使用反斜杠替换
+                            replaced_path = actual_path.replace('\\', '/')
+                            cmd.append(f"data={replaced_path}")
                         else:
                             # 使用YAML文件所在的目录
-                            cmd.append(f"data={os.path.dirname(data_path).replace('\\', '/')}")
+                            # 修复 f-string 问题
+                            dirname_path = os.path.dirname(data_path).replace('\\', '/')
+                            cmd.append(f"data={dirname_path}")
                     except Exception as e:
                         print(f"处理YAML文件时出错: {e}")
                         # 回退到使用原始路径
@@ -274,6 +279,7 @@ class TrainingManager(QObject):
         
         # 设置工作目录为项目目录，避免路径问题
         if 'project' in params:
+            # 修复 f-string 问题
             project_path = params['project'].replace('\\', '/')
             cmd.append(f"project={project_path}")
         
@@ -284,8 +290,11 @@ class TrainingManager(QObject):
                     # 如果是路径类型的参数，确保使用正斜杠
                     if key.endswith('_path') or key in ['save_dir']:
                         if isinstance(value, str):
-                            value = value.replace('\\', '/')
-                    cmd.append(f"{key}={value}")
+                            # 修复 f-string 问题
+                            replaced_value = value.replace('\\', '/')
+                            cmd.append(f"{key}={replaced_value}")
+                    else:
+                        cmd.append(f"{key}={value}")
         
         print(f"执行命令: {' '.join(cmd)}")
         
